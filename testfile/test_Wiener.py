@@ -12,12 +12,12 @@ if img_origin is None:
 
 # 2. MỤC 9: Tạo ảnh bị nhòe chuyển động và cộng nhiễu (L=30)
 print("--- BẮT ĐẦU QUÁ TRÌNH TẠO NHÒE MOTION BLUR ---")
-img_deg_float, img_deg_uint8, F_psf = apply_motion_blur(img_origin, length=30, noise_sigma=5.0)
+img_deg_float, img_deg_uint8, F_psf = apply_motion_blur(img_origin, length=30, noise_sigma=0.2)
 
 # 3. MỤC 10: Thực hiện lọc khôi phục Wiener và quét tìm K tối ưu
 print("\n--- BẮT ĐẦU QUÁ TRÌNH LỌC WIENER & QUÉT TỐI ƯU SSIM ---")
 K_list = [0.0001, 0.001, 0.01, 0.05, 0.1, 0.5]
-best_img, opt_K, max_ssim = wiener_deconvolution(img_deg_uint8, F_psf, img_origin, K_candidates=K_list)
+best_img, opt_K, max_ssim = wiener_deconvolution(img_deg_float, F_psf, img_origin, K_candidates=K_list)
 
 print(f"\n=> KẾT QUẢ TỐI ƯU NHẤT: K = {opt_K} với SSIM = {max_ssim:.4f}")
 
