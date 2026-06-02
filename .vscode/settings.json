@@ -1,6 +1,8 @@
 {
-    "python.analysis.extraPaths": [
-        "./src"
-    ],
-    "python.envFile": "${workspaceFolder}/.env"
+    "terminal.integrated.env.windows": {
+        "PYTHONPATH": "${workspaceFolder}"
+    },
+    "code-runner.executorMap": {
+        "python": "set PYTHONPATH=$workspaceRoot && python -u"
+    }
 }
