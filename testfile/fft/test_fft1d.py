@@ -1,5 +1,5 @@
 import numpy as np
-import fft1d
+from src import fft1d
 
 x = np.array([1,2,3,4])
 

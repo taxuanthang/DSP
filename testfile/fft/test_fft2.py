@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load ảnh
-img = cv2.imread("data/images/test2.jpg", 0)
+img = cv2.imread("data/images/powerOfTwo.jpg", 0)
 
 plt.imshow(img, cmap='gray')
 plt.show()

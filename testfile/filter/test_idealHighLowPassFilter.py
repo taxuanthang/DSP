@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-img = cv2.imread("data/images/test2.jpg",0)
+img = cv2.imread("data/images/normal2.png",0)
 
 F = np.fft.fft2(img)
 F = np.fft.fftshift(F)
@@ -9,8 +9,8 @@ F = np.fft.fftshift(F)
 rows, cols = img.shape
 crow = rows // 2
 ccol = cols // 2
-mask = np.zeros((rows, cols))
-radius = 50
+mask_low = np.zeros((rows, cols))
+radius = 10
 
 for i in range(rows):
     for j in range(cols):
@@ -21,15 +21,22 @@ for i in range(rows):
         )
 
         if distance <= radius:
-            mask[i,j] = 1
+            mask_low[i,j] = 1
 
-
-F_filtered = F * mask
+mask_high = 1-mask_low
+F_filtered = F * mask_high
 
 F_inverse = np.fft.ifftshift(F_filtered)
 img_filtered = np.fft.ifft2(F_inverse)
-img_filtered = np.abs(img_filtered)
+img_high = np.abs(img_filtered)
 
+img_high = cv2.normalize(
+    img_high,
+    None,
+    0,
+    255,
+    cv2.NORM_MINMAX
+)
 
 import matplotlib.pyplot as plt
 
@@ -40,8 +47,8 @@ plt.imshow(img,cmap='gray')
 plt.title("Original")
 
 plt.subplot(122)
-plt.imshow(img_filtered,cmap='gray')
-plt.title("Lowpass")
+plt.imshow(img_high,cmap='gray')
+plt.title("Highpass")
 
 plt.show()
 
