@@ -1,245 +1,146 @@
 import cv2
 import numpy as np
 
+# --- BỘ LỌC THÔNG THẤP LÝ TƯỞNG (IDEAL LOWPASS) ---
 def ideal_lowpass_filter(img, radius=50):
-    """
-    Áp dụng bộ lọc Ideal Lowpass Filter (ILPF) lên ảnh trong miền tần số.
+    src = img.astype(np.float64)
+    h, w = src.shape
     
-    Parameters:
-    -----------
-    img : numpy.ndarray
-        Ảnh xám đầu vào (2D array).
-    radius : int
-        Tần số cắt D0 (bán kính vùng giữ lại xung quanh tâm).
-        
-    Returns:
-    --------
-    img_filtered : numpy.ndarray (uint8)
-        Ảnh sau khi lọc sạch tần số cao.
-    spectrum_orig : numpy.ndarray
-        Phổ biên độ log của ảnh gốc (để hiển thị GUI).
-    spectrum_filt : numpy.ndarray
-        Phổ biên độ log của ảnh sau khi lọc (để hiển thị GUI).
-    mask : numpy.ndarray
-        Mặt nạ lọc dạng nhị phân (0 và 1).
-    """
-    # 1. Chuyển sang float để tính toán chính xác
-    img_float = img.astype(np.float64)
-    rows, cols = img_float.shape
+    # FFT 2D và dịch tâm phổ
+    f_shift = np.fft.fftshift(np.fft.fft2(src))
     
-    # 2. Biến đổi Fourier 2D và dịch tâm
-    F = np.fft.fft2(img_float)
-    F_shift = np.fft.fftshift(F)
+    # Tính khoảng cách từ tâm d để làm mặt nạ
+    cy, cx = h // 2, w // 2
+    Y, X = np.ogrid[:h, :w]
+    d = np.sqrt((Y - cy)**2 + (X - cx)**2)
     
-    # 3. Tạo mặt nạ lọc tối ưu hóa bằng NumPy (thay cho vòng lặp for)
-    crow, ccol = rows // 2, cols // 2
-    Y, X = np.ogrid[:rows, :cols]
-    distance = np.sqrt((Y - crow)**2 + (X - ccol)**2)
+    # Tạo filter Ideal cắt thẳng tần số cao ngoài bán kính
+    mask = np.zeros((h, w))
+    mask[d <= radius] = 1.0
     
-    mask = np.zeros((rows, cols))
-    mask[distance <= radius] = 1.0
+    # Nhân ma trận lọc trong miền tần số
+    f_out = f_shift * mask
     
-    # 4. Áp dụng mặt nạ lọc
-    F_filtered_shift = F_shift * mask
+    # IFFT đưa về miền không gian ảnh
+    img_back = np.fft.ifft2(np.fft.ifftshift(f_out))
+    res = np.clip(np.abs(img_back), 0, 255).astype(np.uint8)
     
-    # 5. Biến đổi Fourier ngược để lấy lại ảnh miền không gian
-    F_inverse_shift = np.fft.ifftshift(F_filtered_shift)
-    img_back = np.fft.ifft2(F_inverse_shift)
-    img_filtered = np.abs(img_back)
+    # Tính phổ biên độ dạng log để hiển thị lên đồ thị GUI
+    spec_orig = np.log(1 + np.abs(f_shift))
+    spec_orig = cv2.normalize(spec_orig, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     
-    # Ép kiểu dải giá trị về chuẩn uint8 (0-255) trước khi trả về
-    img_filtered = np.clip(img_filtered, 0, 255).astype(np.uint8)
+    spec_filt = np.log(1 + np.abs(f_out))
+    spec_filt = cv2.normalize(spec_filt, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     
-    # 6. Tính toán phổ biên độ log (Được chuẩn hóa để hiển thị đẹp trên GUI)
-    spectrum_orig = np.log(1 + np.abs(F_shift))
-    spectrum_orig = cv2.normalize(spectrum_orig, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    
-    spectrum_filt = np.log(1 + np.abs(F_filtered_shift))
-    spectrum_filt = cv2.normalize(spectrum_filt, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    
-    return img_filtered, spectrum_orig, spectrum_filt, mask
+    return res, spec_orig, spec_filt, mask
 
+# --- BỘ LỌC THÔNG CAO LÝ TƯỞNG (IDEAL HIGHPASS) ---
 def ideal_highpass_filter(img, radius=10):
-    """
-    Áp dụng bộ lọc Ideal Highpass Filter (IHPF) lên ảnh trong miền tần số.
-    Giữ lại các tần số cao (biên, cạnh) và loại bỏ tần số thấp.
+    src = img.astype(np.float64)
+    h, w = src.shape
     
-    Parameters:
-    -----------
-    img : numpy.ndarray
-        Ảnh xám đầu vào (2D array).
-    radius : int
-        Tần số cắt D0 (bán kính vùng bị chặn xung quanh tâm).
-        
-    Returns:
-    --------
-    img_filtered : numpy.ndarray (uint8)
-        Ảnh sau khi lọc thông cao (chỉ còn lại các đường biên/cạnh sắc).
-    spectrum_orig : numpy.ndarray
-        Phổ biên độ log của ảnh gốc.
-    spectrum_filt : numpy.ndarray
-        Phổ biên độ log của ảnh sau khi lọc.
-    mask : numpy.ndarray
-        Mặt nạ lọc thông cao nhị phân.
-    """
-    # 1. Chuyển sang float để tính toán chính xác
-    img_float = img.astype(np.float64)
-    rows, cols = img_float.shape
+    # Biến đổi Fourier sang miền tần số
+    f_shift = np.fft.fftshift(np.fft.fft2(src))
     
-    # 2. Biến đổi Fourier 2D và dịch tâm
-    F = np.fft.fft2(img_float)
-    F_shift = np.fft.fftshift(F)
+    cy, cx = h // 2, w // 2
+    Y, X = np.ogrid[:h, :w]
+    d = np.sqrt((Y - cy)**2 + (X - cx)**2)
     
-    # 3. Tạo mặt nạ lọc thông cao tối ưu bằng NumPy (1 - mask_low)
-    crow, ccol = rows // 2, cols // 2
-    Y, X = np.ogrid[:rows, :cols]
-    distance = np.sqrt((Y - crow)**2 + (X - ccol)**2)
+    # Ngược lại với lowpass: Chặn vùng bên trong, giữ bên ngoài
+    mask = np.ones((h, w))
+    mask[d <= radius] = 0.0
     
-    mask = np.ones((rows, cols))
-    mask[distance <= radius] = 0.0  # Chặn các tần số thấp bên trong bán kính
+    f_out = f_shift * mask
     
-    # 4. Áp dụng mặt nạ lọc lên phổ đã dịch tâm
-    F_filtered_shift = F_shift * mask
+    # Khôi phục ảnh ngược
+    img_back = np.fft.ifft2(np.fft.ifftshift(f_out))
+    res = cv2.normalize(np.abs(img_back), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     
-    # 5. Biến đổi Fourier ngược
-    F_inverse_shift = np.fft.ifftshift(F_filtered_shift)
-    img_back = np.fft.ifft2(F_inverse_shift)
-    img_filtered = np.abs(img_back)
+    # Map phổ log tần số
+    spec_orig = cv2.normalize(np.log(1 + np.abs(f_shift)), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    spec_filt = cv2.normalize(np.log(1 + np.abs(f_out)), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     
-    # 6. Chuẩn hóa ảnh đầu ra về [0, 255] chuẩn uint8 đúng như code gốc của bạn
-    img_filtered = cv2.normalize(img_filtered, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    
-    # 7. Tính toán phổ biên độ log để hiển thị đồ thị / GUI
-    spectrum_orig = np.log(1 + np.abs(F_shift))
-    spectrum_orig = cv2.normalize(spectrum_orig, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    
-    spectrum_filt = np.log(1 + np.abs(F_filtered_shift))
-    spectrum_filt = cv2.normalize(spectrum_filt, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    
-    return img_filtered, spectrum_orig, spectrum_filt, mask
+    return res, spec_orig, spec_filt, mask
 
+# --- BỘ LỌC THÔNG THẤP BUTTERWORTH ---
 def butterworth_lowpass_filter(img, radius=50, n=2):
-    """
-    Áp dụng bộ lọc Butterworth Lowpass Filter (BLPF) lên ảnh trong miền tần số.
+    src = img.astype(np.float64)
+    h, w = src.shape
     
-    Parameters:
-    -----------
-    img : numpy.ndarray
-        Ảnh xám đầu vào (2D array).
-    radius : int/float
-        Tần số cắt D0 (bán kính vùng giữ lại xung quanh tâm).
-    n : int
-        Bậc của bộ lọc (thường từ 1 đến 10). Bậc càng cao, cạnh cắt càng dốc.
-        
-    Returns:
-    --------
-    img_filtered : numpy.ndarray (uint8)
-        Ảnh sau khi lọc thông thấp Butterworth (làm mịn ảnh).
-    spectrum_orig : numpy.ndarray
-        Phổ biên độ log của ảnh gốc.
-    spectrum_filt : numpy.ndarray
-        Phổ biên độ log của ảnh sau khi lọc.
-    mask : numpy.ndarray
-        Mặt nạ lọc Butterworth Lowpass (giá trị thực từ 0 đến 1).
-    """
-    # 1. Chuyển sang float để tính toán chính xác
-    img_float = img.astype(np.float64)
-    rows, cols = img_float.shape
+    f_shift = np.fft.fftshift(np.fft.fft2(src))
     
-    # 2. Biến đổi Fourier 2D và dịch tâm
-    F = np.fft.fft2(img_float)
-    F_shift = np.fft.fftshift(F)
+    cy, cx = h // 2, w // 2
+    Y, X = np.ogrid[:h, :w]
+    d = np.sqrt((Y - cy)**2 + (X - cx)**2)
     
-    # 3. Tạo ma trận khoảng cách từ tâm ảnh
-    crow, ccol = rows // 2, cols // 2
-    Y, X = np.ogrid[:rows, :cols]
-    distance = np.sqrt((Y - crow)**2 + (X - ccol)**2)
+    # Công thức Butterworth hạ bậc mịn màng thay vì cắt cụt
+    mask = 1.0 / (1.0 + (d / radius) ** (2 * n))
     
-    # 4. Công thức toán học hàm truyền đạt H(u,v) của Butterworth Lowpass
-    mask = 1.0 / (1.0 + (distance / radius) ** (2 * n))
+    f_out = f_shift * mask
     
-    # 5. Áp dụng mặt nạ lọc lên phổ đã dịch tâm
-    F_filtered_shift = F_shift * mask
+    img_back = np.fft.ifft2(np.fft.ifftshift(f_out))
+    res = np.clip(np.abs(img_back), 0, 255).astype(np.uint8)
     
-    # 6. Biến đổi Fourier ngược để lấy lại ảnh miền không gian
-    F_inverse_shift = np.fft.ifftshift(F_filtered_shift)
-    img_back = np.fft.ifft2(F_inverse_shift)
-    img_filtered = np.abs(img_back)
+    spec_orig = cv2.normalize(np.log(1 + np.abs(f_shift)), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    spec_filt = cv2.normalize(np.log(1 + np.abs(f_out)), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     
-    # Ép kiểu dải giá trị về chuẩn ảnh xám uint8 (0-255)
-    img_filtered = np.clip(img_filtered, 0, 255).astype(np.uint8)
-    
-    # 7. Tính toán phổ biên độ log để hiển thị đồ thị / GUI
-    spectrum_orig = np.log(1 + np.abs(F_shift))
-    spectrum_orig = cv2.normalize(spectrum_orig, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    
-    spectrum_filt = np.log(1 + np.abs(F_filtered_shift))
-    spectrum_filt = cv2.normalize(spectrum_filt, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    
-    return img_filtered, spectrum_orig, spectrum_filt, mask
+    return res, spec_orig, spec_filt, mask
 
+# --- BỘ LỌC THÔNG CAO GAUSSIAN ---
 def gaussian_highpass_filter(img, radius=10):
-    """
-    Áp dụng bộ lọc Gaussian Highpass Filter (GHPF) lên ảnh trong miền tần số.
+    src = img.astype(np.float64)
+    h, w = src.shape
     
-    Parameters:
-    -----------
-    img : numpy.ndarray
-        Ảnh xám đầu vào (2D array).
-    radius : int/float
-        Tần số cắt D0 (độ rộng của hàm chuông Gauss ngược).
+    f_shift = np.fft.fftshift(np.fft.fft2(src))
+    
+    cy, cx = h // 2, w // 2
+    Y, X = np.ogrid[:h, :w]
+    d = np.sqrt((Y - cy)**2 + (X - cx)**2)
+    
+    # Công thức phân bố Gauss ngược lọc lấy biên cạnh sắc
+    mask = 1.0 - np.exp(-(d ** 2) / (2 * (radius ** 2)))
+    
+    f_out = f_shift * mask
+    
+    img_back = np.fft.ifft2(np.fft.ifftshift(f_out))
+    res = np.clip(np.abs(img_back), 0, 255).astype(np.uint8)
+    
+    spec_orig = cv2.normalize(np.log(1 + np.abs(f_shift)), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    spec_filt = cv2.normalize(np.log(1 + np.abs(f_out)), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    
+    return res, spec_orig, spec_filt, mask
+
+# --- BỘ LỌC CHẶN DẢI NOTCH (NOTCH REJECT FILTER) ---
+def notch_reject_filter(img, uk, vk, radius=10):
+    src = img.astype(np.float64)
+    h, w = src.shape
+    
+    f_shift = np.fft.fftshift(np.fft.fft2(src))
+    mask = np.ones((h, w), dtype=np.float64)
+    cy, cx = h // 2, w // 2
+    
+    # Hàm con đục lỗ triệt tiêu nhiễu sọc tuần hoàn
+    def clear_noise_spot(m_matrix, py, px, r):
+        Y, X = np.ogrid[:m_matrix.shape[0], :m_matrix.shape[1]]
+        dist = np.sqrt((Y - py)**2 + (X - px)**2)
+        m_matrix[dist <= r] = 0
+        return m_matrix
+
+    # Nếu click chuột chọn tọa độ nhiễu trên giao diện
+    if uk != 30 or vk != 30:
+        mask = clear_noise_spot(mask, cy + vk, cx + uk, r=radius)
+        mask = clear_noise_spot(mask, cy - vk, cx - uk, r=radius)
+    else:
+        # Nếu chạy mặc định ban đầu, tự động tính sọc chu kỳ theo đề bài (T = 20)
+        period = 20
+        offset = int(w / period)
+        mask = clear_noise_spot(mask, cy, cx - offset, r=radius)
+        mask = clear_noise_spot(mask, cy, cx + offset, r=radius)
         
-    Returns:
-    --------
-    img_filtered : numpy.ndarray (uint8)
-        Ảnh sau khi lọc thông cao Gaussian (làm nổi bật đường biên, cạnh sắc).
-    spectrum_orig : numpy.ndarray
-        Phổ biên độ log của ảnh gốc.
-    spectrum_filt : numpy.ndarray
-        Phổ biên độ log của ảnh sau khi lọc.
-    mask : numpy.ndarray
-        Mặt nạ lọc Gaussian Highpass (vùng tâm bằng 0, càng xa tâm càng tiến về 1).
-    """
-    # 1. Chuyển sang float để tính toán chính xác
-    img_float = img.astype(np.float64)
-    rows, cols = img_float.shape
+    f_notch = f_shift * mask
     
-    # 2. Biến đổi Fourier 2D và dịch tâm
-    F = np.fft.fft2(img_float)
-    F_shift = np.fft.fftshift(F)
+    # Phục hồi ảnh sạch nhiễu
+    img_back = np.fft.ifft2(np.fft.ifftshift(f_notch))
+    res = np.clip(np.abs(img_back), 0, 255).astype(np.uint8)
     
-    # 3. Tạo ma trận khoảng cách từ tâm ảnh bằng ogrid giống code gốc của bạn
-    crow, ccol = rows // 2, cols // 2
-    Y, X = np.ogrid[:rows, :cols]
-    distance = np.sqrt((Y - crow)**2 + (X - ccol)**2)
-    
-    # 4. Công thức toán học hàm truyền đạt H(u,v) của Gaussian Highpass
-    mask = 1.0 - np.exp(-(distance ** 2) / (2 * (radius ** 2)))
-    
-    # 5. Áp dụng mặt nạ lọc lên phổ đã dịch tâm
-    F_filtered_shift = F_shift * mask
-    
-    # 6. Biến đổi Fourier ngược
-    F_inverse_shift = np.fft.ifftshift(F_filtered_shift)
-    img_back = np.fft.ifft2(F_inverse_shift)
-    img_filtered = np.abs(img_back)
-    
-    # Ép kiểu dải giá trị về chuẩn ảnh xám uint8 (0-255)
-    img_filtered = np.clip(img_filtered, 0, 255).astype(np.uint8)
-    
-    # 7. Tính toán phổ biên độ log chuẩn hóa để hiển thị đồ thị / GUI
-    spectrum_orig = np.log(1 + np.abs(F_shift))
-    spectrum_orig = cv2.normalize(spectrum_orig, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    
-    spectrum_filt = np.log(1 + np.abs(F_filtered_shift))
-    spectrum_filt = cv2.normalize(spectrum_filt, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    
-    return img_filtered, spectrum_orig, spectrum_filt, mask
-
-
-
-
-
-
-
-
+    return res, None, f_notch, None

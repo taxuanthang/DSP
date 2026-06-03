@@ -2,173 +2,209 @@ import cv2
 import numpy as np
 import skimage.metrics as metrics
 
+# Hàm tạo nhiễu và làm nhòe chuyển động nằm ngang
 def apply_motion_blur(img, length=30, noise_sigma=5.0):
-    """
-    Mô phỏng hiệu ứng nhòe chuyển động nằm ngang (Motion Blur) và cộng nhiễu Gaussian.
+    src = img.astype(np.float64)
+    h, w = src.shape
     
-    Parameters:
-    -----------
-    img : numpy.ndarray
-        Ảnh gốc sạch đầu vào (2D array).
-    length : int
-        Độ dài vệt nhòe chuyển động (L = 10, 30, 50).
-    noise_sigma : float
-        Độ lệch chuẩn của nhiễu trắng Gaussian cộng thêm vào ảnh.
-        
-    Returns:
-    --------
-    img_degraded : numpy.ndarray (float64)
-        Mảng ảnh bị lỗi (chưa ép kiểu uint8) phục vụ cho tính toán bộ lọc Wiener.
-    img_degraded_uint8 : numpy.ndarray (uint8)
-        Ảnh bị lỗi định dạng chuẩn 0-255 để lưu file hoặc hiển thị GUI.
-    F_psf : numpy.ndarray
-        Phổ tần số Fourier 2D của ma trận làm nhòe PSF (H(u,v)), dùng cho lọc Wiener.
-    """
-    img_float = img.astype(np.float64)
-    rows, cols = img_float.shape
+    # Khởi tạo ma trận ô lọc PSF (Point Spread Function)
+    psf = np.zeros((h, w))
+    cy, cx = h // 2, w // 2
+    x1 = cx - length // 2
+    x2 = x1 + length
+    psf[cy, x1:x2] = 1.0 / length
     
-    # 1. Tạo ma trận điểm lan truyền PSF (Point Spread Function) nằm ngang
-    psf = np.zeros((rows, cols))
-    center_y = rows // 2
-    center_x = cols // 2
-    start_x = center_x - length // 2
-    end_x = start_x + length
-    psf[center_y, start_x:end_x] = 1.0 / length
+    # Biến đổi Fourier và khử dịch pha bằng ifftshift
+    F_img = np.fft.fft2(src)
+    H = np.fft.fft2(np.fft.ifftshift(psf))
     
-    # 2. Chuyển đổi sang miền tần số (áp dụng ifftshift để tránh dịch pha lệch hình)
-    F_img = np.fft.fft2(img_float)
-    F_psf = np.fft.fft2(np.fft.ifftshift(psf))
+    # Nhân chập trên miền tần số
+    F_blur = F_img * H
+    img_blur = np.real(np.fft.ifft2(F_blur))
     
-    # 3. Nhân chập miền tần số và biến đổi ngược để tạo ảnh nhòe
-    F_blurred = F_img * F_psf
-    img_blurred = np.abs(np.fft.ifft2(F_blurred))
-    
-    # 4. Cộng nhiễu trắng Gaussian (AWGN)
+    # Cộng nhiễu Gaussian nếu có cấu hình sigma
     if noise_sigma > 0:
-        noise = np.random.normal(0, noise_sigma, img_blurred.shape)
-        img_degraded = img_blurred + noise
+        noise = np.random.normal(0, noise_sigma, img_blur.shape)
+        img_noisy = img_blur + noise
     else:
-        img_degraded = img_blurred
+        img_noisy = img_blur
         
-    # Ép kiểu dải giá trị chuẩn hiển thị và lưu trữ 
-    img_degraded_uint8 = np.clip(img_degraded, 0, 255).astype(np.uint8)
-    
-    return img_degraded, img_degraded_uint8, F_psf
+    # Ép kiểu uint8 trả về hiển thị giao diện
+    img_uint8 = np.clip(img_noisy, 0, 255).astype(np.uint8)
+    return img_noisy, img_uint8, H
 
+# Hàm mô phỏng nhòe mờ do mất nét (Defocus Blur)
+def apply_defocus_blur(img, radius=15, noise_sigma=5.0):
+    src = img.astype(np.float64)
+    h, w = src.shape
+    
+    # Tạo mặt nạ hình tròn làm bộ lọc nhòe
+    psf = np.zeros((h, w))
+    cy, cx = h // 2, w // 2
+    Y, X = np.ogrid[:h, :w]
+    dist_sq = (Y - cy)**2 + (X - cx)**2
+    psf[dist_sq <= radius**2] = 1.0
+    psf /= np.sum(psf) # Chuẩn hóa năng lượng bộ lọc
+    
+    # Chuyển đổi hệ thống sang miền tần số
+    F_img = np.fft.fft2(src)
+    H = np.fft.fft2(np.fft.ifftshift(psf))
+    
+    # Tạo ảnh lỗi
+    img_blur = np.real(np.fft.ifft2(F_img * H))
+    if noise_sigma > 0:
+        img_noisy = img_blur + np.random.normal(0, noise_sigma, img_blur.shape)
+    else:
+        img_noisy = img_blur
+        
+    img_uint8 = np.clip(img_noisy, 0, 255).astype(np.uint8)
+    return img_noisy, img_uint8, H
+
+# Thuật toán lọc phục hồi ảnh Wiener ngược chập kết hợp quét tối ưu SSIM
 def wiener_deconvolution(img_degraded, F_psf, img_origin, K_candidates=None):
-    """
-    Khôi phục ảnh bị nhòe bằng bộ lọc Wiener và tối ưu hóa tham số K tự động bằng SSIM.
-    
-    Parameters:
-    -----------
-    img_degraded : numpy.ndarray
-        Ảnh bị nhòe/nhiễu đầu vào (2D array).
-    F_psf : numpy.ndarray
-        Phổ tần số Fourier 2D của hàm làm nhòe thu được từ Mục 9.
-    img_origin : numpy.ndarray
-        Ảnh gốc sạch ban đầu để tính toán chỉ số SSIM làm căn cứ tối ưu.
-    K_candidates : list, optional
-        Danh sách các giá trị hằng số K để quét thử nghiệm.
+    if K_candidates is None:
+        K_candidates = [0.001, 0.01, 0.05, 0.1, 0.5]
         
-    Returns:
-    --------
-    best_img_restored : numpy.ndarray (uint8)
-        Ảnh khôi phục cho kết quả SSIM cao nhất.
-    best_K : float
-        Giá trị K tối ưu nhất được tìm thấy.
-    best_ssim : float
-        Giá trị SSIM cao nhất đạt được.
-    """
-    if K_candidates == None:
-        K_candidates = [0.0001, 0.001, 0.01, 0.05, 0.1, 0.5]
-        
-    # Tính phổ Fourier 2D của ảnh lỗi đầu vào (Không dịch tâm để nhân trực tiếp với F_psf)
-    F_degraded = np.fft.fft2(img_degraded.astype(np.float64))
+    F_deg = np.fft.fft2(img_degraded.astype(np.float64))
+    H_conj = np.conj(F_psf)
+    H_mag2 = np.abs(F_psf) ** 2
     
-    # Tính các thành phần cố định trong công thức Wiener để tối ưu tốc độ
-    psf_fft_conj = np.conj(F_psf)
-    psf_fft_mag2 = np.abs(F_psf) ** 2
+    best_ssim = -1.0
+    best_k = 0.01
+    best_psnr = -1
+    best_snr = -1
+    res_img = None
     
-    best_ssim = -1
-    best_K = None
-    best_img_restored = None
+    ref_uint8 = np.clip(img_origin, 0, 255).astype(np.uint8)
     
-    img_origin_uint8 = np.clip(img_origin, 0, 255).astype(np.uint8)
-    
-    # Quét qua danh sách tham số K
-    for K in K_candidates:
-        # Áp dụng công thức bộ lọc Wiener W(u,v)
-        W = psf_fft_conj / (psf_fft_mag2 + K)
-        F_hat = F_degraded * W
+    # Vòng lặp tìm kiếm hằng số K tối ưu nhất
+    for k in K_candidates:
+        # Công thức toán học Wiener nghịch đảo
+        W = H_conj / (H_mag2 + k)
+        F_hat = F_deg * W
         
-        # Biến đổi ngược về miền không gian
-        img_restored = np.abs(np.fft.ifft2(F_hat))
-        img_restored_uint8 = np.clip(img_restored, 0, 255).astype(np.uint8)
+        # Đưa ngược lại miền không gian phẳng
+        img_back = np.abs(np.fft.ifft2(F_hat))
+        img_uint8 = np.clip(img_back, 0, 255).astype(np.uint8)
         
-        # Tính toán SSIM kiểm tra chất lượng khôi phục
-        current_ssim = metrics.structural_similarity(img_origin_uint8, img_restored_uint8, data_range=255)
-        print(f"[Wiener Scan] Thử nghiệm K = {K:<7} -> SSIM đạt: {current_ssim:.4f}")
-        
-        # Giữ lại cấu hình xuất sắc nhất
+        # Đánh giá độ tương đồng cấu trúc ảnh bằng SSIM
+        score = metrics.structural_similarity(ref_uint8, img_uint8, data_range=255)
+        current_ssim = metrics.structural_similarity(
+            ref_uint8,
+            img_uint8,
+            data_range=255
+        )
+
+        current_psnr = compute_psnr(
+            ref_uint8,
+            img_uint8
+        )
+
+        current_snr = compute_snr(
+            ref_uint8,
+            img_uint8
+        )
+
+        print(
+            f"K={k:<7}"
+            f" SSIM={current_ssim:.4f}"
+            f" PSNR={current_psnr:.2f}dB"
+            f" SNR={current_snr:.2f}dB"
+        )
         if current_ssim > best_ssim:
+
             best_ssim = current_ssim
-            best_K = K
-            best_img_restored = img_restored_uint8
+            best_psnr = current_psnr
+            best_snr = current_snr
+
+            best_K = k
+            best_img_restored = img_uint8
+        return (
+            best_img_restored,
+            best_K,
+            best_ssim,
+            best_psnr,
+            best_snr
+        )
             
-    return best_img_restored, best_K, best_ssim
+    return res_img, best_k, max_ssim
 
+def compute_psnr(img_ref, img_test):
+    """
+    Peak Signal-to-Noise Ratio
+    """
+
+    img_ref = img_ref.astype(np.float64)
+    img_test = img_test.astype(np.float64)
+
+    mse = np.mean(
+        (img_ref - img_test) ** 2
+    )
+
+    if mse == 0:
+        return float("inf")
+
+    psnr = 10 * np.log10(
+        (255 ** 2) / mse
+    )
+
+    return psnr
+
+def compute_snr(img_ref, img_test):
+    """
+    Signal-to-Noise Ratio
+    """
+
+    img_ref = img_ref.astype(np.float64)
+    img_test = img_test.astype(np.float64)
+
+    signal_power = np.mean(
+        img_ref ** 2
+    )
+
+    noise_power = np.mean(
+        (img_ref - img_test) ** 2
+    )
+
+    if noise_power == 0:
+        return float("inf")
+
+    snr = 10 * np.log10(
+        signal_power / noise_power
+    )
+
+    return snr
+
+# Hàm trích xuất đặc trưng hướng vân bề mặt dựa trên phổ năng lượng
 def extract_texture_features(img, num_angles=8):
-    """
-    Trích xuất đặc trưng năng lượng theo hướng (angular bins) từ phổ tần số của ảnh.
+    # Tính phổ năng lượng 2D Power Spectrum
+    F_shift = np.fft.fftshift(np.fft.fft2(img.astype(np.float64)))
+    p_spectrum = np.abs(F_shift) ** 2
     
-    Parameters:
-    -----------
-    img : numpy.ndarray
-        Ảnh xám đầu vào (2D array).
-    num_angles : int
-        Số lượng ô hướng chia trên vòng tròn (mặc định là 8).
-        
-    Returns:
-    --------
-    feature_vector : numpy.ndarray
-        Vector đặc trưng đã chuẩn hóa (tổng bằng 1), độ dài bằng num_angles.
-    """
-    # 1. Biến đổi sang miền tần số
-    img_float = img.astype(np.float64)
-    F = np.fft.fft2(img_float)
-    F_shift = np.fft.fftshift(F)
-    mag = np.abs(F_shift)
+    h, w = p_spectrum.shape
+    cy, cx = h // 2, w // 2
+    Y, X = np.ogrid[-cy : h - cy, -cx : w - cx]
     
-    # 2. Tạo ma trận góc tọa độ từ tâm phổ
-    rows, cols = mag.shape
-    cy, cx = rows // 2, cols // 2
-    Y, X = np.ogrid[-cy:rows-cy, -cx:cols-cx]
+    # Tính ma trận góc radian cục bộ của từng tần số
+    rad_angles = np.arctan2(Y, X)
+    feats = np.zeros(num_angles)
+    step = 2 * np.pi / num_angles
     
-    # Tính góc của từng pixel (từ -pi đến pi)
-    angles = np.arctan2(Y, X)
-    
-    feature_vector = []
-    angle_step = 2 * np.pi / num_angles
-    
-    for i in range(num_angles):
-        start_angle = -np.pi + i * angle_step
-        end_angle = start_angle + angle_step
+    # Chia góc chạy lũy tiến quét quanh vòng tròn 360 độ
+    for idx in range(num_angles):
+        low_bound = -np.pi + idx * step
+        high_bound = low_bound + step
         
-        # Tạo mặt nạ chọn các pixel nằm trong dải góc này
-        mask = (angles >= start_angle) & (angles < end_angle)
+        # Lọc dải góc tần số mong muốn
+        zone_mask = (rad_angles >= low_bound) & (rad_angles < high_bound)
+        zone_mask[cy, cx] = False # Loại bỏ điểm tần số trung tâm DC
         
-        # Bỏ qua điểm tâm DC (tần số bằng 0) để không làm nhiễu tổng năng lượng
-        mask[cy, cx] = False 
+        # Tích phân rời rạc (tổng) năng lượng phân bố
+        feats[idx] = np.sum(p_spectrum[zone_mask])
         
-        # Tính tổng năng lượng (biên độ) trong ô hướng này
-        energy = np.sum(mag[mask])
-        feature_vector.append(energy)
+    # Chuẩn hóa ma trận vector đặc trưng đầu ra
+    s_val = np.sum(feats)
+    if s_val > 0:
+        feats /= s_val
         
-    # Chuẩn hóa vector đặc trưng về tổng bằng 1
-    feature_vector = np.array(feature_vector)
-    total_energy = np.sum(feature_vector)
-    if total_energy > 0:
-        feature_vector /= total_energy
-        
-    return feature_vector
-
+    return feats
